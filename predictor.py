@@ -151,18 +151,39 @@ def train_model(stock_data, model_filename='stock_model.h5', scaler_filename='sc
 def load_model_and_scaler(ticker, model_filename='stock_model.h5', scaler_filename='scaler.pkl'):
     model = tf.keras.models.load_model(f"{ticker}_{model_filename}")
     scaler = joblib.load(f"{ticker}_{scaler_filename}")
+    
+    # Recompile the model with the same loss and metrics used during training
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy', Precision(), Recall()])
+    
     return model, scaler
 
 # Function to generate buy signals
 def generate_signal_with_confidence(model, data, scaler):
-    scaled_data = scaler.transform(data[['Close', 'MA_50', 'Volatility']])
-    
+    # Ensure data is not empty
+    if data.empty or data.shape[0] < 60:
+        print("Not enough data to make predictions.")
+        return []  # Return an empty list if there's no data
+
+    try:
+        # Apply the scaler on relevant columns
+        scaled_data = scaler.transform(data[['Close', 'MA_50', 'Volatility']])
+    except ValueError as e:
+        print(f"Error scaling data: {e}")
+        return []  # Return an empty list if scaling fails
+
     lookback = 60
     X = []
+    
     for i in range(lookback, len(scaled_data)):
         X.append(scaled_data[i-lookback:i])
     
     X = np.array(X)
+    
+    # Ensure we have data to make predictions
+    if len(X) == 0:
+        print("No valid data for prediction.")
+        return []  # Return an empty list if no valid data
+    
     predictions = model.predict(X)
 
     buy_signals = []
@@ -190,14 +211,23 @@ def generate_signal_with_confidence(model, data, scaler):
 def fetch_real_time_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        data = stock.history(period='1d', interval='1h')
-        if data.empty:
-            raise ValueError(f"No data available for ticker {ticker}")
+        data = stock.history(period='1mo', interval='1h')  # Increased period to 5 days
+        
+        # Ensure data has at least 60 rows to process
+        if data.empty or data.shape[0] < 60:
+            raise ValueError(f"Not enough data available for ticker {ticker}")
+        
         data = add_features(data)
+        
+        # Ensure data is still valid after feature engineering
+        if data.empty:
+            raise ValueError(f"Not enough valid data after feature engineering for ticker {ticker}")
+        
         return data.dropna()
+    
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
-        return None
+        return None  # Return None if there's an error
 
 # Main function for user interaction
 def main():

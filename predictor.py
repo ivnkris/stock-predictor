@@ -5,8 +5,9 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 import tensorflow as tf
+import tensorflow_addons as tfa
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input
+from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input, Bidirectional, GRU
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.metrics import Precision, Recall
 from sklearn.utils import class_weight
@@ -25,9 +26,21 @@ def download_stock_data(ticker_list, period='2y'):
 
 # Function to add features
 def add_features(df):
-    df['MA_50'] = df['Close'].rolling(window=50).mean()  # 50-period moving average
-    df['Volatility'] = df['Close'].rolling(window=50).std()  # Volatility (standard deviation)
+    df['MA_50'] = df['Close'].rolling(window=50).mean()
+    df['Volatility'] = df['Close'].rolling(window=50).std()
+    df['RSI'] = compute_rsi(df['Close'], window=14)  # Add RSI calculation
+    df['Momentum'] = df['Close'].diff(3)  # 3-period momentum
     return df.dropna()
+
+def compute_rsi(series, window):
+    delta = series.diff(1)
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=window).mean()
+    avg_loss = pd.Series(loss).rolling(window=window).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 # Function to preprocess data
 def preprocess_data(df):
@@ -85,16 +98,16 @@ def preprocess_data(df):
 # Function to build LSTM model
 def build_lstm_model(input_shape):
     model = Sequential()
-    model.add(Input(shape=input_shape))  # Define input shape using Input layer
-    model.add(LSTM(units=50, return_sequences=True))
-    model.add(BatchNormalization())  # Batch Normalization
-    model.add(Dropout(0.2))          # Dropout
-    model.add(LSTM(units=50, return_sequences=False))
-    model.add(BatchNormalization())  # Batch Normalization
-    model.add(Dropout(0.2))          # Dropout
-    model.add(Dense(units=25))
-    model.add(Dense(units=1, activation='sigmoid'))  # Binary classification
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy', Precision(), Recall()])
+    model.add(Input(shape=input_shape))
+    model.add(Bidirectional(LSTM(units=64, return_sequences=True)))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.3))
+    model.add(LSTM(units=64, return_sequences=False))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.3))
+    model.add(Dense(units=32))
+    model.add(Dense(units=1, activation='sigmoid'))
+    model.compile(optimizer='adam', loss=tfa.losses.SigmoidFocalCrossEntropy(), metrics=['accuracy', Precision(), Recall()])
     return model
 
 # Function to train and save model
@@ -153,7 +166,7 @@ def load_model_and_scaler(ticker, model_filename='stock_model.h5', scaler_filena
     scaler = joblib.load(f"{ticker}_{scaler_filename}")
     
     # Recompile the model with the same loss and metrics used during training
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy', Precision(), Recall()])
+    model.compile(optimizer='adam', loss=tfa.losses.SigmoidFocalCrossEntropy(), metrics=['accuracy', Precision(), Recall()])
     
     return model, scaler
 

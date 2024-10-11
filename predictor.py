@@ -5,15 +5,14 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 import tensorflow as tf
+import tensorflow_addons as tfa
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input
+from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input, Bidirectional
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.metrics import Precision, Recall
-from sklearn.utils import class_weight
 import joblib  # For saving/loading models
 import os
 
-# Function to download stock data
 def download_stock_data(ticker_list, period='2y'):
     stock_data = {}
     for ticker in ticker_list:
@@ -23,13 +22,12 @@ def download_stock_data(ticker_list, period='2y'):
         print(f"Downloaded data for {ticker}")
     return stock_data
 
-# Function to add features
 def add_features(df):
     df['MA_50'] = df['Close'].rolling(window=50).mean()  # 50-period moving average
     df['Volatility'] = df['Close'].rolling(window=50).std()  # Volatility (standard deviation)
+    df['Momentum'] = df['Close'].diff(3)  # 3-period momentum
     return df.dropna()
 
-# Function to preprocess data
 def preprocess_data(df):
     # Check if there is enough data to process
     if df.empty or df.shape[0] < 60:  # Ensure enough rows for a 60-period lookback
@@ -39,7 +37,7 @@ def preprocess_data(df):
     
     # Ensure required columns are present and contain enough data
     try:
-        scaled_data = scaler.fit_transform(df[['Close', 'MA_50', 'Volatility']])
+        scaled_data = scaler.fit_transform(df[['Close', 'MA_50', 'Volatility', 'Momentum']])
     except ValueError as e:
         print(f"Error scaling data: {e}")
         raise
@@ -82,22 +80,20 @@ def preprocess_data(df):
     
     return X, y, scaler
 
-# Function to build LSTM model
 def build_lstm_model(input_shape):
     model = Sequential()
     model.add(Input(shape=input_shape))  # Define input shape using Input layer
-    model.add(LSTM(units=50, return_sequences=True))
+    model.add(Bidirectional(LSTM(units=64, return_sequences=True)))
     model.add(BatchNormalization())  # Batch Normalization
-    model.add(Dropout(0.2))          # Dropout
-    model.add(LSTM(units=50, return_sequences=False))
+    model.add(Dropout(0.3))          # Dropout
+    model.add(LSTM(units=64, return_sequences=False))
     model.add(BatchNormalization())  # Batch Normalization
-    model.add(Dropout(0.2))          # Dropout
-    model.add(Dense(units=25))
+    model.add(Dropout(0.3))          # Dropout
+    model.add(Dense(units=32))
     model.add(Dense(units=1, activation='sigmoid'))  # Binary classification
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy', Precision(), Recall()])
+    model.compile(optimizer='adam', loss=tfa.losses.SigmoidFocalCrossEntropy(), metrics=['accuracy', Precision(), Recall()])
     return model
 
-# Function to train and save model
 def train_model(stock_data, model_filename='stock_model.h5', scaler_filename='scaler.pkl'):
     preprocessed_data = {}
     
@@ -147,17 +143,15 @@ def train_model(stock_data, model_filename='stock_model.h5', scaler_filename='sc
     
     return preprocessed_data
 
-# Function to load saved model and scaler
 def load_model_and_scaler(ticker, model_filename='stock_model.h5', scaler_filename='scaler.pkl'):
     model = tf.keras.models.load_model(f"{ticker}_{model_filename}")
     scaler = joblib.load(f"{ticker}_{scaler_filename}")
     
     # Recompile the model with the same loss and metrics used during training
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy', Precision(), Recall()])
+    model.compile(optimizer='adam', loss=tfa.losses.SigmoidFocalCrossEntropy(), metrics=['accuracy', Precision(), Recall()])
     
     return model, scaler
 
-# Function to generate buy signals
 def generate_signal_with_confidence(model, data, scaler):
     # Ensure data is not empty
     if data.empty or data.shape[0] < 60:
@@ -166,7 +160,7 @@ def generate_signal_with_confidence(model, data, scaler):
 
     try:
         # Apply the scaler on relevant columns
-        scaled_data = scaler.transform(data[['Close', 'MA_50', 'Volatility']])
+        scaled_data = scaler.transform(data[['Close', 'MA_50', 'Volatility', 'Momentum']])
     except ValueError as e:
         print(f"Error scaling data: {e}")
         return []  # Return an empty list if scaling fails
@@ -207,11 +201,10 @@ def generate_signal_with_confidence(model, data, scaler):
     
     return buy_signals
 
-# Function to fetch real-time stock data
 def fetch_real_time_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        data = stock.history(period='1mo', interval='1h')  # Increased period to 5 days
+        data = stock.history(period='1mo', interval='1h')
         
         # Ensure data has at least 60 rows to process
         if data.empty or data.shape[0] < 60:
@@ -229,7 +222,6 @@ def fetch_real_time_data(ticker):
         print(f"Error fetching data for {ticker}: {e}")
         return None  # Return None if there's an error
 
-# Main function for user interaction
 def main():
     # List of S&P 500 stock tickers
     url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'

@@ -23,10 +23,31 @@ def download_stock_data(ticker_list, period='max'):
         print(f"Downloaded data for {ticker}")
     return stock_data
 
+def calculate_rsi(df, window=14):
+    delta = df['Close'].diff(1)
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=window).mean()
+    avg_loss = loss.rolling(window=window).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    df['RSI'] = rsi
+    return df
+
+def calculate_macd(df, short_window=12, long_window=26, signal_window=9):
+    short_ema = df['Close'].ewm(span=short_window, adjust=False).mean()
+    long_ema = df['Close'].ewm(span=long_window, adjust=False).mean()
+    df['MACD'] = short_ema - long_ema
+    df['MACD_Signal'] = df['MACD'].ewm(span=signal_window, adjust=False).mean()
+    return df
+
 def add_features(df):
     df['MA_50'] = df['Close'].rolling(window=50).mean()  # 50-period moving average
     df['Volatility'] = df['Close'].rolling(window=50).std()  # Volatility (standard deviation)
     df['Momentum'] = df['Close'].diff(3)  # 3-period momentum
+    df = calculate_rsi(df)  # Calculate RSI with default window of 14
+    df = calculate_macd(df)  # Calculate MACD with default windows (12, 26, 9)
+    
     return df.dropna()
 
 def preprocess_data(df):
@@ -38,7 +59,7 @@ def preprocess_data(df):
     
     # Ensure required columns are present and contain enough data
     try:
-        scaled_data = scaler.fit_transform(df[['Close', 'MA_50', 'Volatility', 'Momentum']])
+        scaled_data = scaler.fit_transform(df[['Close', 'MA_50', 'Volatility', 'Momentum', 'RSI', 'MACD', 'MACD_Signal']])
     except ValueError as e:
         print(f"Error scaling data: {e}")
         raise

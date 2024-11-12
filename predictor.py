@@ -14,11 +14,11 @@ from keras.metrics import Precision, Recall
 import joblib  # For saving/loading models
 import os
 
-def download_stock_data(ticker_list, period='2y'):
+def download_stock_data(ticker_list, period='max'):
     stock_data = {}
     for ticker in ticker_list:
         stock = yf.Ticker(ticker)
-        data = stock.history(period=period, interval='1h')
+        data = stock.history(period=period, interval='1d')
         stock_data[ticker] = data
         print(f"Downloaded data for {ticker}")
     return stock_data
@@ -55,12 +55,12 @@ def preprocess_data(df):
         if starting_price == 0:
             continue
         
-        # Check if the stock rises by 10% in 30 days
+        # Check if the stock rises by 7.5% in 30 days
         price_in_30_days = scaled_data[i+30][0]
         max_drop = np.min(scaled_data[i:i+30, 0])  # Minimum price within the 30 days
         
-        # Condition 1: Stock rises by at least 10%
-        rise_condition = (price_in_30_days - starting_price) / starting_price >= 0.1
+        # Condition 1: Stock rises by at least 7.5%
+        rise_condition = (price_in_30_days - starting_price) / starting_price >= 0.075
         
         # Condition 2: Stock does not drop more than 1% below the starting price
         drop_condition = (max_drop - starting_price) / starting_price >= -0.01
@@ -190,8 +190,8 @@ def generate_signal_with_confidence(model, data, scaler):
         price_in_30_days = future_prices[-1]
         max_drop = np.min(future_prices)  # Minimum price in the next 30 days
         
-        # Condition 1: Stock rises by at least 10%
-        rise_condition = (price_in_30_days - starting_price) / starting_price >= 0.1
+        # Condition 1: Stock rises by at least 7.5%
+        rise_condition = (price_in_30_days - starting_price) / starting_price >= 0.075
         
         # Condition 2: Stock does not drop more than 1% below the starting price
         drop_condition = (max_drop - starting_price) / starting_price >= -0.01
@@ -205,7 +205,7 @@ def generate_signal_with_confidence(model, data, scaler):
 def fetch_real_time_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        data = stock.history(period='1mo', interval='1h')
+        data = stock.history(period='1y', interval='1d')
         
         # Ensure data has at least 60 rows to process
         if data.empty or data.shape[0] < 60:

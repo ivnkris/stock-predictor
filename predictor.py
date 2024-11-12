@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
 import tensorflow as tf
 from tensorflow.keras.utils import Sequence
 import tensorflow_addons as tfa
@@ -11,6 +10,7 @@ from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input, Bidirectional
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.metrics import Precision, Recall
+from keras_tuner import Hyperband, Objective
 import joblib  # For saving/loading models
 import os
 
@@ -132,61 +132,95 @@ def preprocess_data(df):
     
     return X, y, scaler
 
-def build_lstm_model(input_shape):
+def build_model_with_tuner(hp):
     model = Sequential()
-    model.add(Input(shape=input_shape))  # Define input shape using Input layer
-    model.add(Bidirectional(LSTM(units=64, return_sequences=True)))
-    model.add(BatchNormalization())  # Batch Normalization
-    model.add(Dropout(0.3))          # Dropout
-    model.add(LSTM(units=64, return_sequences=False))
-    model.add(BatchNormalization())  # Batch Normalization
-    model.add(Dropout(0.3))          # Dropout
-    model.add(Dense(units=32))
-    model.add(Dense(units=1, activation='sigmoid'))  # Binary classification
-    model.compile(optimizer='adam', loss=tfa.losses.SigmoidFocalCrossEntropy(), metrics=['accuracy', Precision(), Recall()])
+    model.add(Input(shape=(60, 7)))  # Adjust according to your input shape
+
+    # LSTM layer with tunable units
+    model.add(Bidirectional(LSTM(
+        units=hp.Int('lstm_units_1', min_value=32, max_value=128, step=32),
+        return_sequences=True)))
+    model.add(BatchNormalization())
+    model.add(Dropout(hp.Float('dropout_1', min_value=0.2, max_value=0.5, step=0.1)))
+
+    # Second LSTM layer with tunable units
+    model.add(LSTM(units=hp.Int('lstm_units_2', min_value=32, max_value=128, step=32), return_sequences=False))
+    model.add(BatchNormalization())
+    model.add(Dropout(hp.Float('dropout_2', min_value=0.2, max_value=0.5, step=0.1)))
+
+    # Dense layer with tunable units
+    model.add(Dense(units=hp.Int('dense_units', min_value=16, max_value=64, step=16)))
+    model.add(Dense(units=1, activation='sigmoid'))
+
+    # Compile the model with a tunable learning rate
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=hp.Choice('learning_rate', values=[1e-3, 5e-4, 1e-4])),
+        loss=tfa.losses.SigmoidFocalCrossEntropy(),
+        metrics=['accuracy', Precision(), Recall()]
+    )
     return model
 
 def train_model(stock_data, model_filename='stock_model.h5', scaler_filename='scaler.pkl'):
     preprocessed_data = {}
-    
+
     for ticker, data in stock_data.items():
         try:
             # Add features and preprocess data
             data = add_features(data)
             X, y, scaler = preprocess_data(data)  # Will raise ValueError if no valid data
             preprocessed_data[ticker] = (X, y, scaler)
-            
+
             # Split data into train and test sets
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            
-            # Build the LSTM model
-            model = build_lstm_model((X_train.shape[1], X_train.shape[2]))
 
             # Create balanced batch generator for the training data
             balanced_batch_generator = BalancedBatchGenerator(X_train, y_train, batch_size=64)
-            
-            # Add Early Stopping and Learning Rate Scheduler
-            early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
-            lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
 
-            # Train the model using the balanced batch generator
-            model.fit(
+            # Initialize Keras Tuner
+            tuner = Hyperband(
+                build_model_with_tuner,  # The model-building function with hyperparameters
+                objective=Objective("val_recall", direction="max"),  # Specify direction explicitly
+                max_epochs=50,
+                factor=3,
+                directory='hyperparameter_tuning',
+                project_name=f'stock_predictor_tuning_{ticker}'
+            )
+
+            # Early Stopping and Learning Rate Scheduler
+            early_stopping = EarlyStopping(
+                monitor='val_recall',  # Monitor validation recall for stopping
+                patience=5,
+                restore_best_weights=True,
+                mode='max'
+            )
+            lr_scheduler = ReduceLROnPlateau(
+                monitor='val_recall',
+                factor=0.3,
+                patience=3,
+                min_lr=1e-5,
+                mode='max'
+            )
+
+            # Run hyperparameter tuning with the tuner
+            tuner.search(
                 balanced_batch_generator,
-                epochs=50,
                 validation_data=(X_test, y_test),
                 callbacks=[early_stopping, lr_scheduler]
             )
-            
-            # Save model and scaler
-            model.save(f"{ticker}_{model_filename}")
+
+            # Retrieve the best model after tuning
+            best_model = tuner.get_best_models(num_models=1)[0]
+
+            # Save the best model and scaler
+            best_model.save(f"{ticker}_{model_filename}")
             joblib.dump(scaler, f"{ticker}_{scaler_filename}")
-            print(f"Model and scaler for {ticker} saved.")
-        
+            print(f"Best model and scaler for {ticker} saved.")
+
         except ValueError as e:
             # Log the error and skip this ticker
             print(f"Skipping {ticker} due to error: {e}")
             continue
-    
+
     return preprocessed_data
 
 def load_model_and_scaler(ticker, model_filename='stock_model.h5', scaler_filename='scaler.pkl'):

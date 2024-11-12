@@ -5,14 +5,44 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 import tensorflow as tf
+from tensorflow.keras.utils import Sequence
 import tensorflow_addons as tfa
 from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input, Bidirectional
-
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.metrics import Precision, Recall
 import joblib  # For saving/loading models
 import os
+
+class BalancedBatchGenerator(Sequence):
+    def __init__(self, X, y, batch_size=32):
+        self.X = X
+        self.y = y
+        self.batch_size = batch_size
+        self.indices_class_0 = np.where(y == 0)[0]  # Indices for the majority class (e.g., `no-buy`)
+        self.indices_class_1 = np.where(y == 1)[0]  # Indices for the minority class (e.g., `buy`)
+        
+        # Calculate number of samples per class per batch
+        self.samples_per_class = batch_size // 2  # Half batch for each class
+
+    def __len__(self):
+        # Return the number of batches per epoch
+        return int(np.floor(len(self.y) / self.batch_size))
+
+    def __getitem__(self, idx):
+        # Randomly sample indices for each class
+        class_0_indices = np.random.choice(self.indices_class_0, self.samples_per_class, replace=True)
+        class_1_indices = np.random.choice(self.indices_class_1, self.samples_per_class, replace=True)
+        
+        # Combine the indices and shuffle them
+        batch_indices = np.concatenate([class_0_indices, class_1_indices])
+        np.random.shuffle(batch_indices)
+        
+        # Get the corresponding samples
+        X_batch = self.X[batch_indices]
+        y_batch = self.y[batch_indices]
+        
+        return X_batch, y_batch
 
 def download_stock_data(ticker_list, period='max'):
     stock_data = {}
@@ -132,26 +162,20 @@ def train_model(stock_data, model_filename='stock_model.h5', scaler_filename='sc
             # Build the LSTM model
             model = build_lstm_model((X_train.shape[1], X_train.shape[2]))
 
-            # Ensure y_train is in integer format (just in case)
-            y_train = y_train.astype(int)
+            # Create balanced batch generator for the training data
+            balanced_batch_generator = BalancedBatchGenerator(X_train, y_train, batch_size=64)
             
-            # Calculate class weights to handle imbalance
-            class_weights = compute_class_weight(
-                class_weight='balanced',
-                classes=np.unique(y_train),
-                y=y_train
-            )
-
-            # Convert the result of compute_class_weight to a dictionary
-            class_weights = dict(enumerate(class_weights))
-
             # Add Early Stopping and Learning Rate Scheduler
             early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
             lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
 
-            # Train the model with callbacks for early stopping and learning rate scheduling
-            model.fit(X_train, y_train, batch_size=64, epochs=50, validation_split=0.2, 
-                      callbacks=[early_stopping, lr_scheduler], class_weight=class_weights)
+            # Train the model using the balanced batch generator
+            model.fit(
+                balanced_batch_generator,
+                epochs=50,
+                validation_data=(X_test, y_test),
+                callbacks=[early_stopping, lr_scheduler]
+            )
             
             # Save model and scaler
             model.save(f"{ticker}_{model_filename}")

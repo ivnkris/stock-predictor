@@ -240,7 +240,7 @@ def generate_signal_with_confidence(model, data, scaler):
 
     try:
         # Apply the scaler on relevant columns
-        scaled_data = scaler.transform(data[['Close', 'MA_50', 'Volatility', 'Momentum']])
+        scaled_data = scaler.transform(data[['Close', 'MA_50', 'Volatility', 'Momentum', 'RSI', 'MACD', 'MACD_Signal']])
     except ValueError as e:
         print(f"Error scaling data: {e}")
         return []  # Return an empty list if scaling fails
